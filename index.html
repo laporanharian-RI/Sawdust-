@@ -1,0 +1,1143 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sawdust - Mesin Pencacah Kayu Dashboard</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        slate: {
+                            850: '#1e293b',
+                            950: '#0f172a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- SheetJS: membuat file Excel .xlsx yang rapi -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- React & ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel Standalone for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Lucide Icons CDN -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+<style>
+@media print { body { background:#fff !important; color:#111 !important; } nav, button, input, select, .fixed { display:none !important; } main { max-width:100% !important; padding:0 !important; } .bg-slate-800\/70, .bg-slate-800\/60, .bg-slate-800\/40 { background:#fff !important; color:#111 !important; box-shadow:none !important; border:1px solid #ddd !important; break-inside:avoid; } * { color:#111 !important; } }
+</style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans selection:bg-emerald-500 selection:text-white pb-16">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect } = React;
+
+        function App() {
+            // Initial Mock Data (Batch 1 & 2)
+            const [batches, setBatches] = useState(() => {
+                try { const saved = localStorage.getItem('sawdust_batches'); if (saved !== null) return JSON.parse(saved); } catch (e) { console.warn('Data lokal tidak dapat dibaca', e); }
+                return [
+                {
+                    id: 'BATCH-001',
+                    productName: 'Serbuk kayu halus (sawdust)',
+                    weight: '520 kg',
+                    weightNum: 520,
+                    materialSource: 'Limbah Kayu Sungai',
+                    timestamp: '2026-10-25 08:30',
+                    status: 'Ready for Delivery',
+                    photos: [
+                        'https://placehold.co/600x400/27272a/22c55e?text=Timbangan+Batch+001-A',
+                        'https://placehold.co/600x400/27272a/22c55e?text=Timbangan+Batch+001-B'
+                    ],
+                    notes: 'Parman'
+                },
+                {
+                    id: 'BATCH-002',
+                    productName: 'Pencacahan kayu sedang (wood chip)',
+                    weight: '850 kg',
+                    weightNum: 850,
+                    materialSource: 'Limbah kayu Sungai',
+                    timestamp: '2026-10-25 10:15',
+                    status: 'Processing',
+                    photos: [
+                        'https://placehold.co/600x400/27272a/eab308?text=Timbangan+Batch+002'
+                    ],
+                    notes: 'Parman'
+                }
+            ];
+            });
+
+            // UI States
+            const [searchQuery, setSearchQuery] = useState('');
+            const [filterProduct, setFilterProduct] = useState('All');
+            const [filterStatus, setFilterStatus] = useState('All');
+            const [sortBy, setSortBy] = useState('newest');
+            
+            // Modals & Editing States
+            const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+            const [selectedBatch, setSelectedBatch] = useState(null);
+            const [isEditingBatch, setIsEditingBatch] = useState(false);
+            const [editFormData, setEditFormData] = useState({});
+            
+            const [isMainMenuOpen, setIsMainMenuOpen] = useState(false);
+            const [isSheetsModalOpen, setIsSheetsModalOpen] = useState(false);
+            const [sheetsUrl, setSheetsUrl] = useState(() => localStorage.getItem('sawdust_webapp_url') || '');
+            
+            // Date Range Filter States
+            const [dateRangeType, setDateRangeType] = useState('today');
+            const [customStartDate, setCustomStartDate] = useState('');
+            const [customEndDate, setCustomEndDate] = useState('');
+            const [showDateDropdown, setShowDateDropdown] = useState(false);
+
+            // Form State
+            const [formData, setFormData] = useState({
+                productName: 'Serbuk kayu halus (sawdust)',
+                weightNum: '',
+                weightUnit: 'kg',
+                materialSource: 'Limbah Kayu Sungai',
+                date: new Date().toISOString().split('T')[0],
+                photos: [],
+                notes: ''
+            });
+
+            // Machine Status State
+            const [machineStatus, setMachineStatus] = useState('Running');
+            const [isMachineStatusOpen, setIsMachineStatusOpen] = useState(false);
+
+            // Notification Toast State
+            const [toastMessage, setToastMessage] = useState(null);
+
+            useEffect(() => {
+                lucide.createIcons();
+            }, [batches, selectedBatch, isEditingBatch, isAddModalOpen, isMainMenuOpen, isSheetsModalOpen, toastMessage, machineStatus, isMachineStatusOpen]);
+
+            // Simpan salinan lokal agar data tidak hilang saat halaman ditutup.
+            useEffect(() => {
+                try { localStorage.setItem('sawdust_batches', JSON.stringify(batches)); }
+                catch (e) { console.warn('Penyimpanan lokal penuh/gagal', e); }
+            }, [batches]);
+
+            // Sinkronisasi ke Apps Script: metadata + foto base64 untuk disimpan ke Google Drive.
+            const sanitizeRecordForSheets = (record, includePhotos = true) => {
+                const source = record && typeof record === 'object' ? record : {};
+                return {
+                    id: String(source.id || source.batchId || ''),
+                    productName: String(source.productName || ''),
+                    weight: String(source.weight || ''),
+                    weightNum: Number(source.weightNum || 0),
+                    materialSource: String(source.materialSource || ''),
+                    timestamp: String(source.timestamp || ''),
+                    status: String(source.status || ''),
+                    notes: String(source.notes || source.operator || ''),
+                    photos: includePhotos && Array.isArray(source.photos) ? source.photos : []
+                };
+            };
+
+            const syncToSheets = (action, data) => {
+                const endpoint = (localStorage.getItem('sawdust_webapp_url') || sheetsUrl || '').trim();
+                if (!endpoint || !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(endpoint)) {
+                    return { configured: false };
+                }
+                try {
+                    const cleanData = action === 'syncAll'
+                        ? (Array.isArray(data) ? data.map(item => sanitizeRecordForSheets(item, true)) : [])
+                        : sanitizeRecordForSheets(data, action === 'create');
+                    const payload = JSON.stringify({
+                        action,
+                        data: cleanData,
+                        source: 'Sawdust Dashboard',
+                        sentAt: new Date().toISOString()
+                    });
+                    // text/plain + no-cors menghindari preflight; browser tidak dapat membaca respons Apps Script.
+                    fetch(endpoint, {
+                        method: 'POST', mode: 'no-cors',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: payload
+                    }).then(() => {
+                        console.info('Permintaan dikirim ke Apps Script. Periksa Google Sheets dan folder Drive untuk verifikasi.');
+                    }).catch(err => {
+                        console.error('Sinkronisasi gagal:', err);
+                        showToast('Gagal mengirim. Periksa internet dan URL Web App, lalu coba sinkronkan lagi.');
+                    });
+                    return { configured: true, count: action === 'syncAll' ? cleanData.length : 1 };
+                } catch (err) {
+                    console.error('Gagal menyiapkan sinkronisasi:', err);
+                    return { configured: false };
+                }
+            };
+
+            const showToast = (msg) => {
+                setToastMessage(msg);
+                setTimeout(() => {
+                    setToastMessage(null);
+                }, 3500);
+            };
+
+            // Handle Multiple Photo Upload in Form
+            // Kompres foto sebelum disimpan/dikirim agar penyimpanan dan sinkronisasi lebih ringan.
+            const compressPhoto = (file) => new Promise((resolve, reject) => {
+                const img = new Image();
+                const reader = new FileReader();
+                reader.onerror = reject;
+                reader.onload = () => {
+                    img.onload = () => {
+                        const maxSide = 1200;
+                        const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+                        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+                        const ctx = canvas.getContext('2d');
+                        if (!ctx) return reject(new Error('Canvas tidak tersedia'));
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        // JPEG kualitas 0.68 biasanya jauh lebih kecil dari foto kamera asli.
+                        resolve(canvas.toDataURL('image/jpeg', 0.68));
+                    };
+                    img.onerror = reject;
+                    img.src = reader.result;
+                };
+                reader.readAsDataURL(file);
+            });
+
+            const handlePhotoUpload = async (e) => {
+                const files = Array.from(e.target.files || []);
+                e.target.value = '';
+                if (!files.length) return;
+                showToast('Memproses dan mengecilkan foto…');
+                try {
+                    const newPhotoUrls = await Promise.all(files.map(compressPhoto));
+                    setFormData(prev => ({ ...prev, photos: [...prev.photos, ...newPhotoUrls] }));
+                    showToast(`Foto siap (${newPhotoUrls.length}). Ukuran sudah dioptimalkan.`);
+                } catch (err) {
+                    console.error('Gagal mengolah foto:', err);
+                    showToast('Foto gagal diproses. Coba pilih foto JPG/PNG lain.');
+                }
+            };
+
+            const removePhoto = (index) => {
+                setFormData(prev => ({
+                    ...prev,
+                    photos: prev.photos.filter((_, i) => i !== index)
+                }));
+            };
+
+            // INSTANT FAST SAVE for New Production Report (No artificial delay)
+            const handleFormSubmit = (e) => {
+                e.preventDefault();
+                if (!formData.weightNum) {
+                    showToast('Harap masukkan bobot hasil timbangan!');
+                    return;
+                }
+
+                const nextNumber = batches.reduce((max, b) => Math.max(max, Number((String(b.id).match(/(\d+)$/) || [0,0])[1]) || 0), 0) + 1;
+                const newBatchId = `BATCH-${String(nextNumber).padStart(3, '0')}`;
+                const newBatch = {
+                    id: newBatchId,
+                    productName: formData.productName,
+                    weight: `${formData.weightNum} ${formData.weightUnit}`,
+                    weightNum: parseFloat(formData.weightNum) || 0,
+                    materialSource: formData.materialSource,
+                    timestamp: `${formData.date} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+                    status: 'Quality Verified',
+                    photos: formData.photos.length > 0 ? formData.photos : ['https://placehold.co/600x400/27272a/22c55e?text=Default+Timbangan'],
+                    notes: formData.notes || 'Parman'
+                };
+
+                setBatches(prev => [newBatch, ...prev]);
+                const syncResult = syncToSheets('create', newBatch);
+                setIsAddModalOpen(false);
+                setFormData({
+                    productName: 'Serbuk kayu halus (sawdust)',
+                    weightNum: '',
+                    weightUnit: 'kg',
+                    materialSource: 'Limbah Kayu Sungai',
+                    date: new Date().toISOString().split('T')[0],
+                    photos: [],
+                    notes: ''
+                });
+                showToast(syncResult.configured ? `Batch ${newBatchId} disimpan di perangkat. Permintaan sinkronisasi dikirim; periksa Google Sheets untuk memastikan data masuk.` : `Batch ${newBatchId} disimpan di perangkat. URL Apps Script belum valid; atur di menu Google Sheets Config.`);
+            };
+
+            // Save Edited Batch Details
+            const handleSaveEditedBatch = (e) => {
+                e.preventDefault();
+                const batchId = editFormData.id;
+                const weightNumVal = Number(editFormData.weightNum);
+                if (!batchId || !Number.isFinite(weightNumVal) || weightNumVal <= 0) {
+                    showToast('Periksa kembali bobot laporan. Bobot harus lebih besar dari 0.');
+                    return;
+                }
+                const existing = batches.find(b => b.id === batchId);
+                if (!existing) {
+                    showToast('Laporan tidak ditemukan. Tutup katalog lalu buka kembali laporan tersebut.');
+                    return;
+                }
+                const updatedRecord = {
+                    ...existing,
+                    productName: editFormData.productName,
+                    weight: `${weightNumVal} ${editFormData.weightUnit || 'kg'}`,
+                    weightNum: weightNumVal,
+                    materialSource: editFormData.materialSource,
+                    status: editFormData.status,
+                    notes: editFormData.notes
+                };
+                const updatedBatches = batches.map(b => b.id === batchId ? updatedRecord : b);
+                setBatches(updatedBatches);
+                setSelectedBatch(updatedRecord);
+                const syncResult = syncToSheets('update', updatedRecord);
+                setIsEditingBatch(false);
+                showToast(syncResult.configured ? `Laporan ${batchId} diedit di perangkat. Permintaan sinkronisasi dikirim; periksa Google Sheets.` : `Laporan ${batchId} diedit di perangkat. URL Apps Script belum valid; atur di menu Google Sheets Config.`);
+            };
+
+            const handleExportPDF = () => {
+                setIsMainMenuOpen(false);
+                const items = [...filteredBatches];
+                if (!items.length) { showToast('Tidak ada data untuk dibuat PDF.'); return; }
+                const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+                const totalWeight = items.reduce((sum, b) => sum + (Number(b.weightNum) || 0), 0);
+                const rows = items.map((b, i) => `<tr>
+                    <td class="center">${i + 1}</td><td>${esc(b.id)}</td><td>${esc(b.productName)}</td>
+                    <td class="num">${esc(b.weight)}</td><td>${esc(b.materialSource)}</td><td>${esc(b.timestamp)}</td>
+                    <td>${esc(b.status)}</td><td>${esc(b.notes || '-')}</td><td class="center">${(b.photos || []).length}</td>
+                </tr>`).join('');
+                const printWindow = window.open('', '_blank');
+                if (!printWindow) { showToast('Jendela PDF diblokir browser. Izinkan pop-up lalu coba lagi.'); return; }
+                printWindow.document.open();
+                printWindow.document.write(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Laporan Produksi Sawdust</title>
+                <style>
+                  @page { size: A4 landscape; margin: 12mm; }
+                  * { box-sizing: border-box; } body { font: 10px Arial, sans-serif; color:#20252b; margin:0; }
+                  h1 { font-size:20px; margin:0 0 5px; color:#14532d; } .sub { color:#5b6470; margin-bottom:15px; }
+                  .summary { display:flex; gap:10px; margin:12px 0 18px; } .box { border:1px solid #d7dee5; padding:9px 12px; border-radius:5px; min-width:150px; }
+                  .label { font-size:9px; color:#667085; margin-bottom:4px; } .value { font-size:14px; font-weight:bold; }
+                  table { width:100%; border-collapse:collapse; table-layout:auto; } th,td { border:1px solid #cbd5e1; padding:6px; text-align:left; vertical-align:top; overflow-wrap:anywhere; }
+                  th { background:#e8f3eb; color:#173b25; font-weight:bold; } tbody tr:nth-child(even) { background:#f7faf8; }
+                  .center { text-align:center; } .num { text-align:right; white-space:nowrap; } .foot { margin-top:14px; font-size:9px; color:#667085; }
+                  @media screen { body { padding:16px; } }
+                </style></head><body>
+                <h1>LAPORAN PRODUKSI SAWDUST</h1><div class="sub">Rekap data produksi berdasarkan data yang tampil pada dashboard.</div>
+                <div class="summary"><div class="box"><div class="label">Jumlah Batch</div><div class="value">${items.length}</div></div>
+                <div class="box"><div class="label">Total Bobot (angka)</div><div class="value">${totalWeight.toLocaleString('id-ID')} kg</div></div>
+                <div class="box"><div class="label">Tanggal Cetak</div><div class="value">${esc(new Date().toLocaleDateString('id-ID'))}</div></div></div>
+                <table><thead><tr><th>No.</th><th>ID Batch</th><th>Nama Produk</th><th>Bobot</th><th>Sumber Bahan</th><th>Waktu</th><th>Status</th><th>Operator</th><th>Jml Foto</th></tr></thead><tbody>${rows}</tbody></table>
+                <div class="foot">Dokumen dibuat dari Sawdust Dashboard. Untuk menyimpan sebagai PDF, pilih “Simpan sebagai PDF” pada dialog cetak.</div>
+                <script>window.onload=()=>setTimeout(()=>window.print(),300);<\/script></body></html>`);
+                printWindow.document.close();
+            };
+
+            const handleExportExcel = () => {
+                setIsMainMenuOpen(false);
+                const items = [...filteredBatches];
+                if (!items.length) { showToast('Tidak ada data untuk diekspor ke Excel.'); return; }
+                const rows = items.map((b, i) => ({
+                    'No.': i + 1, 'ID Batch': b.id || '', 'Nama Produk': b.productName || '',
+                    'Bobot': b.weight || '', 'Bobot (angka)': Number(b.weightNum) || 0,
+                    'Sumber Bahan': b.materialSource || '', 'Waktu': b.timestamp || '',
+                    'Status': b.status || '', 'Operator': b.notes || '',
+                    'Jumlah Foto': Array.isArray(b.photos) ? b.photos.length : 0,
+                    'Tautan Foto': (Array.isArray(b.photos) ? b.photos : []).filter(x => typeof x === 'string' && /^https?:\/\//i.test(x)).join(' | ')
+                }));
+                if (window.XLSX) {
+                    const ws = XLSX.utils.json_to_sheet(rows);
+                    ws['!cols'] = [{wch:6},{wch:18},{wch:32},{wch:15},{wch:16},{wch:26},{wch:20},{wch:22},{wch:20},{wch:13},{wch:45}];
+                    ws['!autofilter'] = { ref: XLSX.utils.encode_range({s:{r:0,c:0},e:{r:rows.length,c:Object.keys(rows[0]).length-1}}) };
+                    const wb = XLSX.utils.book_new();
+                    XLSX.utils.book_append_sheet(wb, ws, 'Laporan Produksi');
+                    const summary = XLSX.utils.aoa_to_sheet([
+                        ['RINGKASAN PRODUKSI SAWDUST'], ['Tanggal ekspor', new Date().toLocaleString('id-ID')],
+                        ['Jumlah batch', items.length], ['Total bobot (angka)', items.reduce((sum,b)=>sum+(Number(b.weightNum)||0),0)], [],
+                        ['Catatan', 'Kolom tautan foto hanya memuat URL web; foto lokal/base64 tidak dimasukkan ke lembar Excel.']
+                    ]);
+                    summary['!cols'] = [{wch:30},{wch:75}];
+                    XLSX.utils.book_append_sheet(wb, summary, 'Ringkasan');
+                    XLSX.writeFile(wb, `Laporan_Sawdust_${new Date().toISOString().slice(0,10)}.xlsx`);
+                    showToast('File Excel .xlsx berhasil dibuat dengan kolom terpisah.');
+                } else {
+                    // Cadangan jika pustaka Excel tidak dapat dimuat: CSV memakai pemisah titik koma.
+                    const headers = Object.keys(rows[0]);
+                    const csv = [headers, ...rows.map(r => headers.map(h => r[h]))]
+                        .map(row => row.map(v => '"' + String(v ?? '').replace(/"/g,'""') + '"').join(';')).join('\r\n');
+                    const blob = new Blob(['\ufeff' + csv], {type:'text/csv;charset=utf-8;'});
+                    const url = URL.createObjectURL(blob); const a = document.createElement('a');
+                    a.href=url; a.download=`Laporan_Sawdust_${new Date().toISOString().slice(0,10)}.csv`;
+                    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+                    showToast('Pustaka .xlsx tidak termuat; file CSV cadangan diunduh dengan pemisah titik koma.');
+                }
+            };
+
+            const handleResetData = () => {
+                setIsMainMenuOpen(false);
+                if (window.confirm('Apakah Anda yakin ingin mereset seluruh data produksi pada perangkat ini? Tindakan ini tidak dapat dibatalkan.')) {
+                    setBatches([]);
+                    showToast('Data lokal direset. Data di Google Sheets tetap ada dan tidak dihapus.');
+                }
+            };
+
+            // Filter & Search Logic
+            const filteredBatches = useMemo(() => {
+                return batches.filter(batch => {
+                    const matchesSearch = batch.id.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                                          batch.productName.toLowerCase().includes(searchQuery.toLowerCase());
+                    const matchesProduct = filterProduct === 'All' || batch.productName === filterProduct;
+                    const matchesStatus = filterStatus === 'All' || batch.status === filterStatus;
+                    return matchesSearch && matchesProduct && matchesStatus;
+                }).sort((a, b) => {
+                    if (sortBy === 'newest') return b.id.localeCompare(a.id);
+                    if (sortBy === 'heaviest') return b.weightNum - a.weightNum;
+                    return 0;
+                });
+            }, [batches, searchQuery, filterProduct, filterStatus, sortBy]);
+
+            const totalOutputToday = batches.reduce((acc, curr) => acc + curr.weightNum, 0);
+            const activeBatchesCount = batches.filter(b => b.status === 'Processing' || b.status === 'Ready for Delivery' || b.status === 'Quality Verified').length;
+
+            return (
+                <div className="min-h-screen bg-slate-900 text-slate-100 font-sans pb-16">
+                    
+                    {/* Toast Notification */}
+                    {toastMessage && (
+                        <div className="fixed top-20 right-4 z-50 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-3 border border-emerald-400">
+                            <i data-lucide="check-circle-2" className="w-6 h-6 shrink-0"></i>
+                            <span className="font-medium text-sm sm:text-base">{toastMessage}</span>
+                        </div>
+                    )}
+
+                    {/* Navbar */}
+                    <nav className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 sm:px-8 py-4 flex items-center justify-between">
+                        <div className="flex items-center space-x-3">
+                            <div className="bg-gradient-to-tr from-emerald-600 to-amber-600 p-2.5 rounded-xl shadow-lg shadow-emerald-900/30">
+                                <i data-lucide="activity" className="w-6 h-6 text-white"></i>
+                            </div>
+                            <div>
+                                <h1 className="text-lg sm:text-xl font-bold tracking-tight text-white flex items-center gap-2">
+                                    Sawdust <span className="text-xs uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hidden sm:inline-block">Mesin Pencacah Kayu</span>
+                                </h1>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center space-x-3 relative">
+                            <button 
+                                onClick={() => setIsAddModalOpen(true)}
+                                className="bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white px-3.5 sm:px-4 py-2 rounded-xl text-sm font-semibold shadow-lg shadow-emerald-900/40 flex items-center space-x-2 transition-all transform active:scale-95"
+                            >
+                                <i data-lucide="plus" className="w-4 h-4"></i>
+                                <span className="hidden xs:inline">Input Laporan</span>
+                            </button>
+
+                            {/* Main Menu Dropdown */}
+                            <div className="relative">
+                                <button 
+                                    onClick={() => setIsMainMenuOpen(!isMainMenuOpen)}
+                                    className="bg-slate-800 hover:bg-slate-700 text-slate-200 p-2.5 rounded-xl border border-slate-700 flex items-center space-x-2 transition-colors"
+                                    title="Menu Utama"
+                                >
+                                    <i data-lucide="menu" className="w-5 h-5"></i>
+                                    <span className="text-sm font-medium hidden md:inline">Menu Utama</span>
+                                    <i data-lucide="chevron-down" className="w-4 h-4 text-slate-400"></i>
+                                </button>
+
+                                {isMainMenuOpen && (
+                                    <div className="absolute right-0 mt-2 w-72 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl z-50 overflow-hidden py-2 divide-y divide-slate-800">
+                                        <div className="px-4 py-3">
+                                            <div className="flex items-center justify-between mb-2">
+                                                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                                                    <i data-lucide="calendar" className="w-3.5 h-3.5 text-emerald-400"></i> Rentang Tanggal
+                                                </span>
+                                            </div>
+                                            <div className="space-y-1">
+                                                <button 
+                                                    onClick={() => { setDateRangeType('today'); setShowDateDropdown(false); setIsMainMenuOpen(false); showToast('Filter: Hari Ini'); }}
+                                                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dateRangeType === 'today' ? 'bg-emerald-600/20 text-emerald-400 font-semibold' : 'text-slate-300 hover:bg-slate-800'}`}
+                                                >
+                                                    Hari Ini
+                                                </button>
+                                                <button 
+                                                    onClick={() => { setDateRangeType('yesterday'); setShowDateDropdown(false); setIsMainMenuOpen(false); showToast('Filter: Kemarin'); }}
+                                                    className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${dateRangeType === 'yesterday' ? 'bg-emerald-600/20 text-emerald-400 font-semibold' : 'text-slate-300 hover:bg-slate-800'}`}
+                                                >
+                                                    Kemarin
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div className="p-2 space-y-1">
+                                            <button 
+                                                onClick={handleExportPDF}
+                                                className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800 rounded-xl transition-colors"
+                                            >
+                                                <i data-lucide="file-text" className="w-4 h-4 text-rose-400"></i>
+                                                <span>Download PDF</span>
+                                            </button>
+
+                                            <button 
+                                                onClick={handleExportExcel}
+                                                className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800 rounded-xl transition-colors"
+                                            >
+                                                <i data-lucide="file-spreadsheet" className="w-4 h-4 text-emerald-400"></i>
+                                                <span>Export Excel</span>
+                                            </button>
+
+                                            <button 
+                                                onClick={() => { setIsMainMenuOpen(false); setIsSheetsModalOpen(true); }}
+                                                className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-slate-800 rounded-xl transition-colors"
+                                            >
+                                                <i data-lucide="table" className="w-4 h-4 text-amber-400"></i>
+                                                <span>Google Sheets Config</span>
+                                            </button>
+                                        </div>
+
+                                        <div className="p-2">
+                                            <button 
+                                                onClick={handleResetData}
+                                                className="w-full flex items-center space-x-2.5 px-3 py-2 text-xs font-medium text-red-400 hover:bg-red-500/10 rounded-xl transition-colors"
+                                            >
+                                                <i data-lucide="rotate-ccw" className="w-4 h-4"></i>
+                                                <span>Reset Data</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </nav>
+
+                    {/* Main Content */}
+                    <main className="max-w-7xl mx-auto px-4 sm:px-8 pt-6 space-y-6">
+
+                        {/* Quick Stats Cards */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col justify-between">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Output</span>
+                                    <div className="bg-emerald-500/20 p-2 rounded-xl text-emerald-400">
+                                        <i data-lucide="scale" className="w-5 h-5"></i>
+                                    </div>
+                                </div>
+                                <div className="mt-4">
+                                    <h3 className="text-2xl sm:text-3xl font-extrabold text-white">{totalOutputToday} <span className="text-sm font-normal text-slate-400">kg</span></h3>
+                                    <p className="text-xs text-emerald-400 mt-1">✓ Akumulasi real-time</p>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col justify-between">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Batches</span>
+                                    <div className="bg-amber-500/20 p-2 rounded-xl text-amber-400">
+                                        <i data-lucide="layers" className="w-5 h-5"></i>
+                                    </div>
+                                </div>
+                                <div className="mt-4">
+                                    <h3 className="text-2xl sm:text-3xl font-extrabold text-white">{activeBatchesCount} <span className="text-sm font-normal text-slate-400">Batch</span></h3>
+                                    <p className="text-xs text-amber-400 mt-1">⚡ Proses aktif</p>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col justify-between">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Status Mesin</span>
+                                    <div className={`p-2 rounded-xl ${
+                                        machineStatus === 'Running' ? 'bg-emerald-500/25 text-emerald-400 animate-pulse' :
+                                        machineStatus === 'Maintenance' ? 'bg-amber-500/25 text-amber-400' :
+                                        machineStatus === 'Standby' ? 'bg-blue-500/25 text-blue-400' :
+                                        'bg-rose-500/25 text-rose-400'
+                                    }`}>
+                                        <i data-lucide="activity" className="w-5 h-5"></i>
+                                    </div>
+                                </div>
+                                <div className="mt-4 relative">
+                                    <button 
+                                        onClick={() => setIsMachineStatusOpen(!isMachineStatusOpen)}
+                                        className="w-full text-left flex items-center justify-between bg-slate-900/80 hover:bg-slate-900 border border-slate-700/80 px-3 py-2 rounded-xl transition-colors"
+                                    >
+                                        <div className="flex items-center gap-2">
+                                            <span className={`w-3 h-3 rounded-full ${
+                                                machineStatus === 'Running' ? 'bg-emerald-500 animate-ping' :
+                                                machineStatus === 'Maintenance' ? 'bg-amber-500' :
+                                                machineStatus === 'Standby' ? 'bg-blue-500' :
+                                                'bg-rose-500'
+                                            }`}></span>
+                                            <span className="text-sm font-bold text-white">{machineStatus}</span>
+                                        </div>
+                                        <i data-lucide="chevron-down" className={`w-4 h-4 text-slate-400 transition-transform ${isMachineStatusOpen ? 'rotate-180' : ''}`}></i>
+                                    </button>
+
+                                    {isMachineStatusOpen && (
+                                        <div className="absolute top-full left-0 mt-2 w-full bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-30 overflow-hidden py-1">
+                                            {['Running', 'Maintenance', 'Standby', 'Stopped'].map((status) => (
+                                                <button
+                                                    key={status}
+                                                    onClick={() => {
+                                                        setMachineStatus(status);
+                                                        setIsMachineStatusOpen(false);
+                                                        showToast(`Status mesin diubah ke: ${status}`);
+                                                    }}
+                                                    className={`w-full text-left px-3 py-2 text-xs font-semibold flex items-center space-x-2 transition-colors ${
+                                                        machineStatus === status ? 'bg-emerald-600/20 text-emerald-400' : 'text-slate-300 hover:bg-slate-800'
+                                                    }`}
+                                                >
+                                                    <span className={`w-2 h-2 rounded-full ${
+                                                        status === 'Running' ? 'bg-emerald-500' :
+                                                        status === 'Maintenance' ? 'bg-amber-500' :
+                                                        status === 'Standby' ? 'bg-blue-500' :
+                                                        'bg-rose-500'
+                                                    }`}></span>
+                                                    <span>{status}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <p className="text-xs text-slate-400 mt-2">RPM: {machineStatus === 'Running' ? '2,450' : '0'} | Load: {machineStatus === 'Running' ? '78%' : '0%'}</p>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-800/60 border border-slate-700/60 rounded-2xl p-4 sm:p-5 shadow-xl flex flex-col justify-between">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Google Sheets</span>
+                                    <div className="bg-blue-500/20 p-2 rounded-xl text-blue-400">
+                                        <i data-lucide="table" className="w-5 h-5"></i>
+                                    </div>
+                                </div>
+                                <div className="mt-4">
+                                    <h3 className="text-lg font-bold text-blue-400 truncate">{sheetsUrl ? 'URL Disetel' : 'Belum Disetel'}</h3>
+                                    <p className="text-xs text-slate-400 mt-1 truncate">{sheetsUrl ? 'Periksa hasil sinkronisasi' : 'Buka Menu Google Sheets Config'}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Search & Filter Bar */}
+                        <div className="bg-slate-800/40 border border-slate-700/60 rounded-2xl p-4 sm:p-5 shadow-lg flex flex-col md:flex-row gap-4 items-center justify-between">
+                            <div className="relative w-full md:w-96">
+                                <i data-lucide="search" className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
+                                <input 
+                                    type="text" 
+                                    placeholder="Cari Batch ID atau Nama Produk..."
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
+                                <select 
+                                    value={filterProduct} 
+                                    onChange={(e) => setFilterProduct(e.target.value)}
+                                    className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                                >
+                                    <option value="All">Semua Produk</option>
+                                    <option value="Serbuk kayu halus (sawdust)">Serbuk kayu halus (sawdust)</option>
+                                    <option value="Pencacahan kayu sedang (wood chip)">Pencacahan kayu sedang (wood chip)</option>
+                                </select>
+
+                                <select 
+                                    value={filterStatus} 
+                                    onChange={(e) => setFilterStatus(e.target.value)}
+                                    className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-200 focus:outline-none focus:border-emerald-500"
+                                >
+                                    <option value="All">Semua Status</option>
+                                    <option value="Ready for Delivery">Ready for Delivery</option>
+                                    <option value="Processing">Processing</option>
+                                    <option value="Quality Verified">Quality Verified</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        {/* Output Catalog Grid */}
+                        <div className="space-y-4">
+                            <div className="flex items-center justify-between">
+                                <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                    <i data-lucide="layers" className="w-5 h-5 text-emerald-400"></i> Katalog Hasil Produksi Pencacahan Kayu
+                                </h2>
+                                <span className="text-xs text-slate-400 font-medium">Menampilkan {filteredBatches.length} batch</span>
+                            </div>
+
+                            {filteredBatches.length === 0 ? (
+                                <div className="bg-slate-800/30 border border-slate-800 rounded-2xl p-12 text-center">
+                                    <i data-lucide="layers" className="w-12 h-12 text-slate-600 mx-auto mb-3"></i>
+                                    <h3 className="text-base font-semibold text-slate-300">Tidak ada data batch ditemukan</h3>
+                                </div>
+                            ) : (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    {filteredBatches.map((batch) => (
+                                        <div 
+                                            key={batch.id}
+                                            onClick={() => {
+                                                setSelectedBatch(batch);
+                                                setIsEditingBatch(false);
+                                            }}
+                                            className="bg-slate-800/70 hover:bg-slate-800 border border-slate-700/80 hover:border-emerald-500/50 rounded-2xl overflow-hidden shadow-xl transition-all duration-300 cursor-pointer group flex flex-col justify-between"
+                                        >
+                                            <div className="relative h-48 w-full bg-slate-950 overflow-hidden">
+                                                <img 
+                                                    src={(Array.isArray(batch.photos) && batch.photos[0]) || 'https://placehold.co/600x400/27272a/22c55e?text=Foto+Laporan'} 
+                                                    alt={batch.productName} 
+                                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 opacity-90"
+                                                />
+                                                <div className="absolute top-3 right-3">
+                                                    <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold shadow-md ${
+                                                        batch.status === 'Ready for Delivery' ? 'bg-emerald-500/90 text-white' :
+                                                        batch.status === 'Processing' ? 'bg-amber-500/90 text-slate-950' :
+                                                        'bg-blue-500/90 text-white'
+                                                    }`}>
+                                                        {batch.status}
+                                                    </span>
+                                                </div>
+                                            </div>
+
+                                            <div className="p-5 space-y-4 flex-1 flex flex-col justify-between">
+                                                <div>
+                                                    <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
+                                                        <span className="font-mono font-bold text-emerald-400">{batch.id}</span>
+                                                        <span className="flex items-center gap-1"><i data-lucide="clock" className="w-3 h-3"></i> {batch.timestamp}</span>
+                                                    </div>
+                                                    <h3 className="text-base font-bold text-white group-hover:text-emerald-400 transition-colors line-clamp-1">
+                                                        {batch.productName}
+                                                    </h3>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-3 py-3 border-y border-slate-700/50 text-xs">
+                                                    <div>
+                                                        <span className="text-slate-400 block mb-0.5">Bobot Timbangan</span>
+                                                        <span className="font-bold text-white text-sm">{batch.weight}</span>
+                                                    </div>
+                                                    <div>
+                                                        <span className="text-slate-400 block mb-0.5">Bahan Baku Asal</span>
+                                                        <span className="font-semibold text-amber-400">{batch.materialSource}</span>
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex items-center justify-between gap-3 pt-1">
+                                                    <span className="text-xs text-slate-400 truncate max-w-[180px]">Operator : {batch.notes || '-'}</span>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                const weightText = String(batch.weight || '');
+                                                                setSelectedBatch({...batch, photos: Array.isArray(batch.photos) ? batch.photos : []});
+                                                                setEditFormData({
+                                                                    id: batch.id,
+                                                                    productName: batch.productName || 'Serbuk kayu halus (sawdust)',
+                                                                    weightNum: batch.weightNum ?? (parseFloat(weightText) || ''),
+                                                                    weightUnit: /tons?/i.test(weightText) ? 'Tons' : 'kg',
+                                                                    materialSource: batch.materialSource || '',
+                                                                    status: batch.status || 'Processing',
+                                                                    notes: batch.notes || ''
+                                                                });
+                                                                setIsEditingBatch(true);
+                                                            }}
+                                                            className="text-xs font-semibold text-slate-950 bg-emerald-400 hover:bg-emerald-300 px-3 py-2 rounded-lg flex items-center gap-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                                                            aria-label={`Edit laporan ${batch.id}`}
+                                                        >
+                                                            <i data-lucide="edit-3" className="w-3.5 h-3.5"></i> Edit Laporan
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => { e.stopPropagation(); setSelectedBatch(batch); setIsEditingBatch(false); }}
+                                                            className="text-xs font-semibold text-emerald-400 border border-emerald-500/40 hover:bg-emerald-500/10 px-3 py-2 rounded-lg"
+                                                        >
+                                                            Detail
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                    </main>
+
+                    {/* Add Production Report Modal */}
+                    {isAddModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
+                            <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden my-8">
+                                <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                                        <i data-lucide="plus" className="w-5 h-5 text-emerald-400"></i> Input Laporan Produksi Baru
+                                    </h3>
+                                    <button onClick={() => setIsAddModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800">
+                                        <i data-lucide="x" className="w-5 h-5"></i>
+                                    </button>
+                                </div>
+
+                                <form onSubmit={handleFormSubmit} className="p-6 space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Nama Produk Hasil</label>
+                                        <select 
+                                            value={formData.productName}
+                                            onChange={(e) => setFormData({...formData, productName: e.target.value})}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                        >
+                                            <option value="Serbuk kayu halus (sawdust)">Serbuk kayu halus (sawdust)</option>
+                                            <option value="Pencacahan kayu sedang (wood chip)">Pencacahan kayu sedang (wood chip)</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Bobot Hasil Timbangan</label>
+                                        <div className="flex gap-2">
+                                            <input 
+                                                type="number" 
+                                                required
+                                                placeholder="Contoh: 500"
+                                                value={formData.weightNum}
+                                                onChange={(e) => setFormData({...formData, weightNum: e.target.value})}
+                                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            />
+                                            <select 
+                                                value={formData.weightUnit}
+                                                onChange={(e) => setFormData({...formData, weightUnit: e.target.value})}
+                                                className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            >
+                                                <option value="kg">kg</option>
+                                                <option value="Tons">Tons</option>
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Bahan Baku Asal</label>
+                                        <select 
+                                            value={formData.materialSource}
+                                            onChange={(e) => setFormData({...formData, materialSource: e.target.value})}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                        >
+                                            <option value="Limbah Kayu Sungai">Limbah Kayu Sungai</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Tanggal Produksi</label>
+                                        <input 
+                                            type="date" 
+                                            value={formData.date}
+                                            onChange={(e) => setFormData({...formData, date: e.target.value})}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                        />
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Foto Timbangan (Bisa Multiple)</label>
+                                        <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-slate-700 border-dashed rounded-xl cursor-pointer bg-slate-950 hover:bg-slate-800 transition-colors">
+                                            <div className="flex flex-col items-center justify-center pt-5 pb-6 px-4 text-center">
+                                                <i data-lucide="upload" className="w-8 h-8 mb-2 text-emerald-400"></i>
+                                                <p className="text-xs text-slate-300"><span className="font-semibold">Klik untuk upload foto</span> atau drag & drop</p>
+                                            </div>
+                                            <input type="file" multiple accept="image/*" onChange={handlePhotoUpload} className="hidden" />
+                                        </label>
+
+                                        {formData.photos.length > 0 && (
+                                            <div className="grid grid-cols-3 gap-2 mt-3">
+                                                {formData.photos.map((url, idx) => (
+                                                    <div key={idx} className="relative h-20 bg-slate-950 rounded-lg overflow-hidden border border-slate-700">
+                                                        <img src={url} alt={`Preview ${idx}`} className="w-full h-full object-cover" />
+                                                        <button 
+                                                            type="button" 
+                                                            onClick={() => removePhoto(idx)}
+                                                            className="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full text-xs"
+                                                        >
+                                                            <i data-lucide="trash-2" className="w-3 h-3"></i>
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Operator</label>
+                                        <input 
+                                            type="text"
+                                            value={formData.notes}
+                                            onChange={(e) => setFormData({...formData, notes: e.target.value})}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                        />
+                                    </div>
+
+                                    <div className="flex items-center justify-end space-x-3 pt-2">
+                                        <button 
+                                            type="button"
+                                            onClick={() => setIsAddModalOpen(false)}
+                                            className="px-4 py-2 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800"
+                                        >
+                                            Batal
+                                        </button>
+                                        <button 
+                                            type="submit"
+                                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-lg shadow-emerald-900/40 flex items-center space-x-2"
+                                        >
+                                            <i data-lucide="check-circle-2" className="w-4 h-4"></i>
+                                            <span>Simpan & Sinkron</span>
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Detail & Edit Batch Modal */}
+                    {selectedBatch && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
+                            <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden my-8">
+                                <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                                    <div className="flex items-center space-x-3">
+                                        <span className="font-mono font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-lg border border-emerald-500/20">{selectedBatch.id}</span>
+                                        <h3 className="text-lg font-bold text-white">{isEditingBatch ? 'Edit Batch Produksi' : selectedBatch.productName}</h3>
+                                    </div>
+                                    <div className="flex items-center space-x-2">
+                                        {!isEditingBatch ? (
+                                            <button 
+                                                onClick={() => {
+                                                    setEditFormData({
+                                                        id: selectedBatch.id,
+                                                        productName: selectedBatch.productName,
+                                                        weightNum: selectedBatch.weightNum,
+                                                        weightUnit: /tons?/i.test(String(selectedBatch.weight || '')) ? 'Tons' : 'kg',
+                                                        materialSource: selectedBatch.materialSource,
+                                                        status: selectedBatch.status,
+                                                        notes: selectedBatch.notes
+                                                    });
+                                                    setIsEditingBatch(true);
+                                                }}
+                                                className="bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-emerald-500/30"
+                                            >
+                                                <i data-lucide="edit-3" className="w-3.5 h-3.5"></i> Edit Batch
+                                            </button>
+                                        ) : (
+                                            <button 
+                                                onClick={() => setIsEditingBatch(false)}
+                                                className="bg-slate-800 text-slate-300 px-3 py-1.5 rounded-xl text-xs font-semibold"
+                                            >
+                                                Batal Edit
+                                            </button>
+                                        )}
+                                        <button onClick={() => setSelectedBatch(null)} className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800">
+                                            <i data-lucide="x" className="w-5 h-5"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {!isEditingBatch ? (
+                                    <div className="p-6 space-y-6">
+                                        <div>
+                                            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Galeri Foto Timbangan & Hasil</h4>
+                                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                                                {(Array.isArray(selectedBatch.photos) ? selectedBatch.photos : []).map((photo, i) => (
+                                                    <div key={i} className="relative h-32 rounded-xl overflow-hidden border border-slate-700 bg-slate-950">
+                                                        <img src={photo} alt={`Scale photo ${i+1}`} className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                                                    </div>
+                                                ))}
+                                                {(!Array.isArray(selectedBatch.photos) || selectedBatch.photos.length === 0) && <p className="text-sm text-slate-400 col-span-full">Belum ada foto untuk laporan ini.</p>}
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 bg-slate-950/60 p-4 rounded-2xl border border-slate-800">
+                                            <div>
+                                                <span className="text-xs text-slate-400 block mb-1">Bobot Timbangan</span>
+                                                <span className="text-base font-bold text-white">{selectedBatch.weight || `${selectedBatch.weightNum || 0} kg`}</span>
+                                            </div>
+                                            <div>
+                                                <span className="text-xs text-slate-400 block mb-1">Bahan Baku Asal</span>
+                                                <span className="text-sm font-semibold text-amber-400">{selectedBatch.materialSource}</span>
+                                            </div>
+                                            <div>
+                                                <span className="text-xs text-slate-400 block mb-1">Status Laporan</span>
+                                                <select 
+                                                    value={selectedBatch.status}
+                                                    onChange={(e) => {
+                                                        const updatedStatus = e.target.value;
+                                                        const updatedRecord = {...selectedBatch, status: updatedStatus};
+                                                        setBatches(prev => prev.map(b => b.id === selectedBatch.id ? updatedRecord : b));
+                                                        syncToSheets('update', updatedRecord);
+                                                        setSelectedBatch({...selectedBatch, status: updatedStatus});
+                                                        showToast(`Status ${selectedBatch.id} diubah ke ${updatedStatus}`);
+                                                    }}
+                                                    className="bg-slate-900 border border-slate-700 text-xs font-semibold text-emerald-400 rounded-lg px-2.5 py-1 focus:outline-none focus:border-emerald-500 w-full"
+                                                >
+                                                    <option value="Ready for Delivery">Ready for Delivery</option>
+                                                    <option value="Processing">Processing</option>
+                                                    <option value="Quality Verified">Quality Verified</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Operator</h4>
+                                            <p className="text-sm text-slate-200 bg-slate-950/80 p-4 rounded-2xl border border-slate-800 italic">
+                                                "{selectedBatch.notes}"
+                                            </p>
+                                        </div>
+
+                                        <div className="flex justify-end pt-2">
+                                            <button onClick={() => setSelectedBatch(null)} className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-6 py-2.5 rounded-xl text-sm font-semibold">
+                                                Tutup
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <form onSubmit={handleSaveEditedBatch} className="p-6 space-y-4">
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Nama Produk Hasil</label>
+                                            <select 
+                                                value={editFormData.productName}
+                                                onChange={(e) => setEditFormData({...editFormData, productName: e.target.value})}
+                                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            >
+                                                <option value="Serbuk kayu halus (sawdust)">Serbuk kayu halus (sawdust)</option>
+                                                <option value="Pencacahan kayu sedang (wood chip)">Pencacahan kayu sedang (wood chip)</option>
+                                            </select>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-300 mb-1.5">Bobot Timbangan</label>
+                                                <input 
+                                                    type="number" 
+                                                    required
+                                                    value={editFormData.weightNum}
+                                                    onChange={(e) => setEditFormData({...editFormData, weightNum: e.target.value})}
+                                                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block text-xs font-semibold text-slate-300 mb-1.5">Satuan</label>
+                                                <select 
+                                                    value={editFormData.weightUnit}
+                                                    onChange={(e) => setEditFormData({...editFormData, weightUnit: e.target.value})}
+                                                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                                >
+                                                    <option value="kg">kg</option>
+                                                    <option value="Tons">Tons</option>
+                                                </select>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Bahan Baku Asal</label>
+                                            <input 
+                                                type="text"
+                                                value={editFormData.materialSource}
+                                                onChange={(e) => setEditFormData({...editFormData, materialSource: e.target.value})}
+                                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Status Laporan</label>
+                                            <select 
+                                                value={editFormData.status}
+                                                onChange={(e) => setEditFormData({...editFormData, status: e.target.value})}
+                                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            >
+                                                <option value="Ready for Delivery">Ready for Delivery</option>
+                                                <option value="Processing">Processing</option>
+                                                <option value="Quality Verified">Quality Verified</option>
+                                            </select>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Operator</label>
+                                            <input 
+                                                type="text"
+                                                value={editFormData.notes}
+                                                onChange={(e) => setEditFormData({...editFormData, notes: e.target.value})}
+                                                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                                            />
+                                        </div>
+
+                                        <div className="flex items-center justify-end space-x-3 pt-4">
+                                            <button 
+                                                type="button"
+                                                onClick={() => setIsEditingBatch(false)}
+                                                className="px-4 py-2 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800"
+                                            >
+                                                Batal
+                                            </button>
+                                            <button 
+                                                type="submit"
+                                                className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2.5 rounded-xl text-sm font-semibold shadow-lg shadow-emerald-900/40 flex items-center space-x-2"
+                                            >
+                                                <i data-lucide="check-circle-2" className="w-4 h-4"></i>
+                                                <span>Simpan Perubahan</span>
+                                            </button>
+                                        </div>
+                                    </form>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Google Sheets Config Modal */}
+                    {isSheetsModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
+                            <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden">
+                                <div className="bg-slate-950 px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+                                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                                        <i data-lucide="table" className="w-5 h-5 text-amber-400"></i> Google Sheets Integration
+                                    </h3>
+                                    <button onClick={() => setIsSheetsModalOpen(false)} className="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800">
+                                        <i data-lucide="x" className="w-5 h-5"></i>
+                                    </button>
+                                </div>
+
+                                <div className="p-6 space-y-4">
+                                    <p className="text-xs text-slate-300 leading-relaxed">
+                                        Masukkan URL Web App Apps Script berakhiran /exec. Foto yang diunggah akan dikirim ke backend untuk disimpan di Google Drive; tautan foto dicatat di Google Sheets. Karena browser membatasi pembacaan respons Apps Script, selalu periksa spreadsheet dan folder Drive untuk memastikan data masuk.
+                                    </p>
+
+                                    <div>
+                                        <label className="block text-xs font-semibold text-slate-300 mb-1.5">Google Sheets URL / Webhook</label>
+                                        <input 
+                                            type="text" 
+                                            value={sheetsUrl}
+                                            onChange={(e) => setSheetsUrl(e.target.value)}
+                                            className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none focus:border-amber-500 font-mono"
+                                        />
+                                    </div>
+
+                                    <div className="flex items-center justify-end space-x-3 pt-2">
+                                        <button onClick={() => setIsSheetsModalOpen(false)} className="px-4 py-2 rounded-xl text-sm font-medium text-slate-300 hover:bg-slate-800">
+                                            Batal
+                                        </button>
+                                        <button 
+                                            onClick={() => {
+                                                const endpoint = sheetsUrl.trim();
+                                                if (endpoint && !/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec(?:\?.*)?$/.test(endpoint)) {
+                                                    showToast('URL harus berupa URL Web App Apps Script yang berakhiran /exec.');
+                                                    return;
+                                                }
+                                                localStorage.setItem('sawdust_webapp_url', endpoint);
+                                                setSheetsUrl(endpoint);
+                                                setIsSheetsModalOpen(false);
+                                                if (endpoint) {
+                                                    const result = syncToSheets('syncAll', batches);
+                                                    showToast(result.configured ? 'URL disimpan. Permintaan sinkronisasi dikirim; periksa Google Sheets untuk memastikan data masuk.' : 'URL tersimpan, tetapi permintaan sinkronisasi gagal dimulai.');
+                                                } else showToast('URL sinkronisasi dihapus. Data tetap tersimpan di perangkat.');
+                                            }}
+                                            className="bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold px-6 py-2.5 rounded-xl text-sm shadow-lg flex items-center space-x-2"
+                                        >
+                                            <i data-lucide="check-circle-2" className="w-4 h-4"></i>
+                                            <span>Simpan Konfigurasi</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
